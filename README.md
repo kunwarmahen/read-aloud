@@ -28,14 +28,17 @@ A Chrome extension that reads webpage content aloud with synchronized word highl
 2. Click the arrow (▼) to expand the panel
 
 ### Reading the entire page:
+
 - Click **▶️ Page** to read the full page content
 
 ### Reading selected text:
+
 - Select any text on the page with your mouse
 - The panel will show "X words selected"
 - Click **▶️ Selection** to read only the selected text
 
 ### Controls:
+
 - **Pause** (⏸️) - Pause playback
 - **Stop** (⏹️) - Stop and reset
 - **Restart** (🔄) - Start from beginning
@@ -48,7 +51,7 @@ Adjust speed and voice as desired. Click the arrow (▲) to minimize the panel.
 
 This extension uses the **Web Speech API** (native to Chrome) for text-to-speech conversion. No external dependencies or local models are required.
 
-You mentioned using Whisper, but Whisper is for speech-to-text (transcription), not text-to-speech. The Web Speech API is perfect for this use case and requires no setup.
+For Linux SpeechSynthesisUtterance does not work. So you can use local server to handle it. Read how to setup [Install](./INSTALL.md).
 
 ## Browser Support
 
