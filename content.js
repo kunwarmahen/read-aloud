@@ -2,26 +2,119 @@
 
 let currentAudio = null;
 let currentUtterance = null;
-let currentText = '';
+let currentText = "";
 let currentWordIndex = 0;
 let words = [];
 let isPaused = false;
 let isPlaying = false;
-let selectedText = '';
+let selectedText = "";
 let currentHighlight = null;
 let highlightInPage = false;
-let ttsServerUrl = 'http://localhost:5000';
+let ttsServerUrl = "http://localhost:5000";
 let playbackRate = 1.0;
-let ttsMode = 'web'; // 'web' or 'server'
+let ttsMode = "web"; // 'web' or 'server'
 let webSpeechAvailable = false;
+let castServerUrl = "http://localhost:5000";
+let castConnected = false;
+let isCasting = false;
+let stopRequested = false;
+let castTimeouts = [];
+let wordTrackingInterval = null;
+
+// Check if Cast relay server is available
+async function checkCastServer() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: "castStatus" });
+    if (response.connected) {
+      castConnected = true;
+      document.getElementById("cast-section").style.display = "block";
+      updateCastButton();
+      return true;
+    }
+  } catch (error) {
+    console.log("Cast relay server not available");
+  }
+  document.getElementById("cast-section").style.display = "block";
+  castConnected = false;
+  updateCastButton();
+  return false;
+}
+
+function updateCastButton() {
+  const castBtn = document.getElementById("cast-btn");
+  const castIcon = document.getElementById("cast-icon");
+  const castText = document.getElementById("cast-text");
+
+  if (castConnected) {
+    castIcon.textContent = "📡✓";
+    castText.textContent = "Connected";
+    castBtn.style.background =
+      "linear-gradient(135deg, #4CAF50 0%, #45a049 100%)";
+    castBtn.style.color = "white";
+  } else {
+    castIcon.textContent = "📡";
+    castText.textContent = "Setup Cast Device";
+    castBtn.style.background = "";
+    castBtn.style.color = "";
+  }
+}
+
+async function castAudio(audioDataUrl) {
+  if (!castConnected) {
+    alert('No cast device connected. Click "Setup Cast Device" first.');
+    return false;
+  }
+
+  try {
+    // Convert data URL to blob
+    const response = await fetch(audioDataUrl);
+    const blob = await response.blob();
+
+    // Convert blob to array buffer (can be sent via message)
+    const arrayBuffer = await blob.arrayBuffer();
+
+    // Send via background worker
+    const result = await chrome.runtime.sendMessage({
+      action: "castAudio",
+      audioData: Array.from(new Uint8Array(arrayBuffer)), // Convert to array
+    });
+
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+
+    isCasting = true;
+    return true;
+  } catch (error) {
+    console.error("Cast error:", error);
+    updateStatus("Cast error: " + error.message);
+    return false;
+  }
+}
+
+function openCastSetup() {
+  // Open cast relay page in new tab
+  window.open(`${castServerUrl}/cast`, "castsetup", "width=600,height=400");
+
+  // Poll for connection
+  const checkInterval = setInterval(async () => {
+    const connected = await checkCastServer();
+    if (connected) {
+      clearInterval(checkInterval);
+    }
+  }, 2000);
+
+  // Stop checking after 30 seconds
+  setTimeout(() => clearInterval(checkInterval), 30000);
+}
 
 // Create floating panel
 function createFloatingPanel() {
-  if (document.getElementById('read-aloud-panel')) return;
+  if (document.getElementById("read-aloud-panel")) return;
 
-  const panel = document.createElement('div');
-  panel.id = 'read-aloud-panel';
-  panel.className = 'collapsed';
+  const panel = document.createElement("div");
+  panel.id = "read-aloud-panel";
+  panel.className = "collapsed";
   panel.innerHTML = `
     <div class="panel-icon" id="panel-icon" title="Read Aloud">
       🔊
@@ -86,11 +179,21 @@ function createFloatingPanel() {
           <div id="progress-fill"></div>
         </div>
         <div class="status">Ready</div>
+        <div class="cast-section" id="cast-section" style="display: none;">
+          <button id="cast-btn" class="mini-btn" style="width: 100%;">
+            <span id="cast-icon">📡</span>
+            <span id="cast-text">Cast to Device</span>
+          </button>
+          <select id="cast-device-select" style="display: none; width: 100%; margin-top: 8px; padding: 8px; border-radius: 6px;"></select>
+        </div>
         <button id="setup-server-btn" class="mini-btn" style="display: none; margin-top: 8px; width: 100%;">⚙️ Setup TTS Server</button>
       </div>
     </div>
   `;
   document.body.appendChild(panel);
+
+  // Check cast server
+  checkCastServer();
 
   // Set up event listeners
   setupEventListeners();
@@ -98,103 +201,120 @@ function createFloatingPanel() {
 }
 
 function setupEventListeners() {
-  const panel = document.getElementById('read-aloud-panel');
-  const panelIcon = document.getElementById('panel-icon');
-  const closeBtn = document.getElementById('close-panel');
-  const loadPageBtn = document.getElementById('load-page-btn');
-  const loadSelectionBtn = document.getElementById('load-selection-btn');
-  const playPauseBtn = document.getElementById('play-pause-btn');
-  const stopBtn = document.getElementById('stop-btn');
-  const restartBtn = document.getElementById('restart-btn');
-  const rewindBtn = document.getElementById('rewind-btn');
-  const forwardBtn = document.getElementById('forward-btn');
-  const speedSlider = document.getElementById('speed-slider');
-  const speedValue = document.getElementById('speed-value');
-  const voiceSelect = document.getElementById('voice-select');
-  const highlightToggle = document.getElementById('highlight-toggle');
-  const setupServerBtn = document.getElementById('setup-server-btn');
-  const saveServerBtn = document.getElementById('save-server-btn');
-  const cancelServerBtn = document.getElementById('cancel-server-btn');
-  const serverUrlInput = document.getElementById('server-url-input');
+  const panel = document.getElementById("read-aloud-panel");
+  const panelIcon = document.getElementById("panel-icon");
+  const closeBtn = document.getElementById("close-panel");
+  const loadPageBtn = document.getElementById("load-page-btn");
+  const loadSelectionBtn = document.getElementById("load-selection-btn");
+  const playPauseBtn = document.getElementById("play-pause-btn");
+  const stopBtn = document.getElementById("stop-btn");
+  const restartBtn = document.getElementById("restart-btn");
+  const rewindBtn = document.getElementById("rewind-btn");
+  const forwardBtn = document.getElementById("forward-btn");
+  const speedSlider = document.getElementById("speed-slider");
+  const speedValue = document.getElementById("speed-value");
+  const voiceSelect = document.getElementById("voice-select");
+  const highlightToggle = document.getElementById("highlight-toggle");
+  const setupServerBtn = document.getElementById("setup-server-btn");
+  const saveServerBtn = document.getElementById("save-server-btn");
+  const cancelServerBtn = document.getElementById("cancel-server-btn");
+  const serverUrlInput = document.getElementById("server-url-input");
+  const castBtn = document.getElementById("cast-btn");
 
-  panelIcon.addEventListener('click', () => {
-    panel.classList.remove('collapsed');
+  panelIcon.addEventListener("click", () => {
+    panel.classList.remove("collapsed");
   });
 
-  closeBtn.addEventListener('click', () => {
-    panel.classList.add('collapsed');
+  closeBtn.addEventListener("click", () => {
+    panel.classList.add("collapsed");
   });
 
-  setupServerBtn.addEventListener('click', () => {
-    document.getElementById('server-config').style.display = 'flex';
-    setupServerBtn.style.display = 'none';
+  if (castBtn) {
+    castBtn.addEventListener("click", () => {
+      if (!castConnected) {
+        openCastSetup();
+      } else {
+        // Disconnect
+        chrome.runtime.sendMessage({ action: "castDisconnect" }).then(() => {
+          castConnected = false;
+          updateCastButton();
+        });
+      }
+    });
+  }
+
+  setupServerBtn.addEventListener("click", () => {
+    document.getElementById("server-config").style.display = "flex";
+    setupServerBtn.style.display = "none";
   });
 
-  saveServerBtn.addEventListener('click', async () => {
+  saveServerBtn.addEventListener("click", async () => {
     ttsServerUrl = serverUrlInput.value;
     await chrome.storage.local.set({ ttsServerUrl });
-    document.getElementById('server-config').style.display = 'none';
-    setupServerBtn.style.display = 'inline-block';
+    document.getElementById("server-config").style.display = "none";
+    setupServerBtn.style.display = "inline-block";
     checkTTSMode();
   });
 
-  cancelServerBtn.addEventListener('click', () => {
+  cancelServerBtn.addEventListener("click", () => {
     serverUrlInput.value = ttsServerUrl;
-    document.getElementById('server-config').style.display = 'none';
-    setupServerBtn.style.display = 'inline-block';
+    document.getElementById("server-config").style.display = "none";
+    setupServerBtn.style.display = "inline-block";
   });
 
-  highlightToggle.addEventListener('change', (e) => {
+  highlightToggle.addEventListener("change", (e) => {
     highlightInPage = e.target.checked;
     if (words.length > 0) {
       displayTextWithHighlight();
     }
   });
 
-  loadPageBtn.addEventListener('click', () => loadText(false));
-  loadSelectionBtn.addEventListener('click', () => loadText(true));
-  playPauseBtn.addEventListener('click', togglePlayPause);
-  stopBtn.addEventListener('click', stopText);
-  restartBtn.addEventListener('click', restartText);
-  rewindBtn.addEventListener('click', () => skipWords(-10));
-  forwardBtn.addEventListener('click', () => skipWords(10));
+  loadPageBtn.addEventListener("click", () => loadText(false));
+  loadSelectionBtn.addEventListener("click", () => loadText(true));
+  playPauseBtn.addEventListener("click", togglePlayPause);
+  stopBtn.addEventListener("click", stopText);
+  restartBtn.addEventListener("click", restartText);
+  rewindBtn.addEventListener("click", () => skipWords(-10));
+  forwardBtn.addEventListener("click", () => skipWords(10));
 
-  speedSlider.addEventListener('input', (e) => {
+  speedSlider.addEventListener("input", (e) => {
     speedValue.textContent = e.target.value;
     playbackRate = parseFloat(e.target.value);
-    if (ttsMode === 'server' && currentAudio && isPlaying) {
+    if (ttsMode === "server" && currentAudio && isPlaying) {
       currentAudio.playbackRate = playbackRate;
     }
   });
 
-  voiceSelect.addEventListener('change', () => {
+  voiceSelect.addEventListener("change", () => {
     // Voice changing applies on next play
   });
 
-  document.addEventListener('mouseup', handleTextSelection);
-  document.addEventListener('keyup', handleTextSelection);
+  document.addEventListener("mouseup", handleTextSelection);
+  document.addEventListener("keyup", handleTextSelection);
 }
 
 function handleTextSelection() {
   const selection = window.getSelection();
   const text = selection.toString().trim();
-  const selectionInfo = document.getElementById('selection-info');
-  const loadSelectionBtn = document.getElementById('load-selection-btn');
-  const btnHelper = loadSelectionBtn.querySelector('.btn-helper');
-  
+  const selectionInfo = document.getElementById("selection-info");
+  const loadSelectionBtn = document.getElementById("load-selection-btn");
+  const btnHelper = loadSelectionBtn.querySelector(".btn-helper");
+
   if (text && text.length > 0) {
     selectedText = text;
     const wordCount = text.split(/\s+/).length;
-    selectionInfo.textContent = `✓ ${wordCount} word${wordCount > 1 ? 's' : ''} selected`;
-    selectionInfo.style.display = 'block';
+    selectionInfo.textContent = `✓ ${wordCount} word${
+      wordCount > 1 ? "s" : ""
+    } selected`;
+    selectionInfo.style.display = "block";
     loadSelectionBtn.disabled = false;
     btnHelper.textContent = `${wordCount} words`;
   } else {
-    selectedText = '';
-    selectionInfo.style.display = 'none';
+    selectedText = "";
+    selectionInfo.style.display = "none";
     if (!isPlaying) {
       loadSelectionBtn.disabled = true;
-      btnHelper.textContent = 'Select text first';
+      btnHelper.textContent = "Select text first";
     }
   }
 }
@@ -205,10 +325,10 @@ function populateVoiceList() {
 
 async function checkTTSMode() {
   // Load saved server URL
-  const stored = await chrome.storage.local.get(['ttsServerUrl']);
+  const stored = await chrome.storage.local.get(["ttsServerUrl"]);
   if (stored.ttsServerUrl) {
     ttsServerUrl = stored.ttsServerUrl;
-    document.getElementById('server-url-input').value = ttsServerUrl;
+    document.getElementById("server-url-input").value = ttsServerUrl;
   }
 
   // First check if Web Speech API is available
@@ -217,57 +337,64 @@ async function checkTTSMode() {
       const voices = speechSynthesis.getVoices();
       if (voices.length > 0) {
         webSpeechAvailable = true;
-        ttsMode = 'web';
+        ttsMode = "web";
         populateWebVoices(voices);
-        updateTTSModeInfo('Using Web Speech API', true);
-        document.getElementById('setup-server-btn').style.display = 'none';
+        updateTTSModeInfo("Using Web Speech API", true);
+        document.getElementById("setup-server-btn").style.display = "none";
         return;
       }
     } catch (e) {
-      console.log('Web Speech API not functional:', e);
+      console.log("Web Speech API not functional:", e);
     }
   }
 
   // If Web Speech not available, try TTS server
   try {
-    const response = await chrome.runtime.sendMessage({ action: 'checkTTS' });
+    const response = await chrome.runtime.sendMessage({ action: "checkTTS" });
     if (response.success) {
-      ttsMode = 'server';
-      updateTTSModeInfo('Using Local TTS Server', true);
-      document.getElementById('setup-server-btn').style.display = 'inline-block';
-      document.getElementById('voice-control-section').style.display = 'none';
+      ttsMode = "server";
+      updateTTSModeInfo("Using Local TTS Server", true);
+      document.getElementById("setup-server-btn").style.display =
+        "inline-block";
+      document.getElementById("voice-control-section").style.display = "none";
     } else {
-      ttsMode = 'none';
-      updateTTSModeInfo('TTS not available. Configure server below.', false);
-      document.getElementById('setup-server-btn').style.display = 'inline-block';
-      document.getElementById('voice-control-section').style.display = 'none';
+      ttsMode = "none";
+      updateTTSModeInfo("TTS not available. Configure server below.", false);
+      document.getElementById("setup-server-btn").style.display =
+        "inline-block";
+      document.getElementById("voice-control-section").style.display = "none";
     }
   } catch (error) {
-    ttsMode = 'none';
-    updateTTSModeInfo('TTS not available. Configure server below.', false);
-    document.getElementById('setup-server-btn').style.display = 'inline-block';
-    document.getElementById('voice-control-section').style.display = 'none';
+    ttsMode = "none";
+    updateTTSModeInfo("TTS not available. Configure server below.", false);
+    document.getElementById("setup-server-btn").style.display = "inline-block";
+    document.getElementById("voice-control-section").style.display = "none";
   }
 }
 
 function populateWebVoices(voices) {
-  const voiceSelect = document.getElementById('voice-select');
+  const voiceSelect = document.getElementById("voice-select");
   voiceSelect.innerHTML = voices
-    .map((voice, index) => 
-      `<option value="${index}">${voice.name} (${voice.lang})</option>`)
-    .join('');
+    .map(
+      (voice, index) =>
+        `<option value="${index}">${voice.name} (${voice.lang})</option>`
+    )
+    .join("");
 }
 
 function updateTTSModeInfo(message, success) {
-  const modeInfo = document.getElementById('tts-mode-info');
+  const modeInfo = document.getElementById("tts-mode-info");
   modeInfo.textContent = message;
-  modeInfo.className = 'tts-mode-info ' + (success ? 'success' : 'warning');
+  modeInfo.className = "tts-mode-info " + (success ? "success" : "warning");
 }
 
 // Populate voices when they're loaded (for Web Speech API)
-if (typeof speechSynthesis !== 'undefined' && speechSynthesis.onvoiceschanged !== undefined) {
+if (
+  typeof speechSynthesis !== "undefined" &&
+  speechSynthesis.onvoiceschanged !== undefined
+) {
   speechSynthesis.onvoiceschanged = () => {
-    if (ttsMode === 'web' || ttsMode === 'none') {
+    if (ttsMode === "web" || ttsMode === "none") {
       checkTTSMode();
     }
   };
@@ -276,10 +403,12 @@ if (typeof speechSynthesis !== 'undefined' && speechSynthesis.onvoiceschanged !=
 function extractPageText() {
   // Get main content, avoiding scripts, styles, etc.
   const body = document.body.cloneNode(true);
-  
+
   // Remove unwanted elements
-  const unwanted = body.querySelectorAll('script, style, noscript, iframe, nav, footer, header');
-  unwanted.forEach(el => el.remove());
+  const unwanted = body.querySelectorAll(
+    "script, style, noscript, iframe, nav, footer, header"
+  );
+  unwanted.forEach((el) => el.remove());
 
   // Get text content
   const text = body.innerText || body.textContent;
@@ -287,117 +416,124 @@ function extractPageText() {
 }
 
 function updateStatus(message) {
-  const status = document.querySelector('.status');
+  const status = document.querySelector(".status");
   if (status) status.textContent = message;
 }
 
 function updateProgress() {
-  const progressFill = document.getElementById('progress-fill');
+  const progressFill = document.getElementById("progress-fill");
   if (progressFill && words.length > 0) {
     const percentage = (currentWordIndex / words.length) * 100;
-    progressFill.style.width = percentage + '%';
+    progressFill.style.width = percentage + "%";
   }
 }
 
 function displayTextWithHighlight() {
-  const textDisplay = document.getElementById('text-display');
-  
+  const textDisplay = document.getElementById("text-display");
+
   if (highlightInPage) {
     // Hide text display when highlighting on page
     if (textDisplay) {
-      textDisplay.style.display = 'none';
+      textDisplay.style.display = "none";
     }
     highlightWordOnPage();
   } else {
     // Show text in panel
     if (textDisplay) {
-      textDisplay.style.display = 'block';
+      textDisplay.style.display = "block";
     }
     removePageHighlights();
-    
+
     if (!textDisplay || words.length === 0) return;
 
-    let html = '';
+    let html = "";
     const contextBefore = 15;
     const contextAfter = 15;
-    
+
     const startIdx = Math.max(0, currentWordIndex - contextBefore);
     const endIdx = Math.min(words.length, currentWordIndex + contextAfter + 1);
-    
-    if (startIdx > 0) html += '... ';
-    
+
+    if (startIdx > 0) html += "... ";
+
     for (let i = startIdx; i < endIdx; i++) {
       if (i === currentWordIndex) {
         html += `<span class="current-word">${words[i]}</span> `;
       } else {
-        html += words[i] + ' ';
+        html += words[i] + " ";
       }
     }
-    
-    if (endIdx < words.length) html += '...';
-    
+
+    if (endIdx < words.length) html += "...";
+
     textDisplay.innerHTML = `<p>${html}</p>`;
-    
-    const currentWordEl = textDisplay.querySelector('.current-word');
+
+    const currentWordEl = textDisplay.querySelector(".current-word");
     if (currentWordEl) {
-      currentWordEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      currentWordEl.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "center",
+      });
     }
   }
 }
 
 function highlightWordOnPage() {
   removePageHighlights();
-  
+
   if (currentWordIndex >= words.length) return;
-  
+
   const word = words[currentWordIndex];
-  const searchText = word.replace(/[.,!?;:]/g, '');
-  
+  const searchText = word.replace(/[.,!?;:]/g, "");
+
   const walker = document.createTreeWalker(
     document.body,
     NodeFilter.SHOW_TEXT,
     {
-      acceptNode: function(node) {
-        if (node.parentElement.closest('#read-aloud-panel')) {
+      acceptNode: function (node) {
+        if (node.parentElement.closest("#read-aloud-panel")) {
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
-      }
+      },
     }
   );
 
   let node;
-  while (node = walker.nextNode()) {
+  while ((node = walker.nextNode())) {
     const text = node.textContent;
-    const regex = new RegExp('\\b' + searchText + '\\b', 'i');
+    const regex = new RegExp("\\b" + searchText + "\\b", "i");
     const match = text.match(regex);
-    
+
     if (match) {
       const index = match.index;
       const before = text.substring(0, index);
       const matchText = text.substring(index, index + match[0].length);
       const after = text.substring(index + match[0].length);
 
-      const highlight = document.createElement('span');
-      highlight.className = 'read-aloud-page-highlight';
+      const highlight = document.createElement("span");
+      highlight.className = "read-aloud-page-highlight";
       highlight.textContent = matchText;
 
       const parent = node.parentNode;
       parent.replaceChild(document.createTextNode(after), node);
       parent.insertBefore(highlight, parent.firstChild);
       parent.insertBefore(document.createTextNode(before), highlight);
-      
-      highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      highlight.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
   }
 }
 
 function removePageHighlights() {
-  const highlights = document.querySelectorAll('.read-aloud-page-highlight');
-  highlights.forEach(highlight => {
+  const highlights = document.querySelectorAll(".read-aloud-page-highlight");
+  highlights.forEach((highlight) => {
     const parent = highlight.parentNode;
-    parent.replaceChild(document.createTextNode(highlight.textContent), highlight);
+    parent.replaceChild(
+      document.createTextNode(highlight.textContent),
+      highlight
+    );
     parent.normalize();
   });
 }
@@ -409,24 +545,24 @@ function removeHighlights() {
 function loadText(useSelection = false) {
   if (useSelection && selectedText) {
     currentText = selectedText;
-    updateStatus('Selection loaded');
+    updateStatus("Selection loaded");
   } else {
     currentText = extractPageText();
-    updateStatus('Page loaded');
+    updateStatus("Page loaded");
   }
-  
+
   if (!currentText) {
-    updateStatus('No text found');
+    updateStatus("No text found");
     return;
   }
 
-  words = currentText.split(/\s+/).filter(w => w.length > 0);
+  words = currentText.split(/\s+/).filter((w) => w.length > 0);
   currentWordIndex = 0;
   displayTextWithHighlight();
   updateButtons();
-  
+
   // Enable play button
-  const playPauseBtn = document.getElementById('play-pause-btn');
+  const playPauseBtn = document.getElementById("play-pause-btn");
   if (playPauseBtn) {
     playPauseBtn.disabled = false;
   }
@@ -434,44 +570,75 @@ function loadText(useSelection = false) {
 
 function togglePlayPause() {
   if (!words || words.length === 0) {
-    updateStatus('Please load content first');
+    updateStatus("Please load content first");
     return;
   }
 
   if (isPlaying) {
-    if (ttsMode === 'web') {
+    if (ttsMode === "web") {
       if (isPaused) {
         speechSynthesis.resume();
         isPaused = false;
-        updateStatus('Playing...');
+        updateStatus("Playing...");
       } else {
         speechSynthesis.pause();
         isPaused = true;
-        updateStatus('Paused');
+        updateStatus("Paused");
       }
-    } else if (ttsMode === 'server') {
+    } else if (ttsMode === "server") {
       if (isPaused) {
         if (currentAudio) {
           currentAudio.play();
         }
         isPaused = false;
-        updateStatus('Playing...');
+        updateStatus("Playing...");
+
+        // If casting, resume by calling playWithServer again
+        if (castConnected) {
+          chrome.runtime.sendMessage({
+            action: "castControl",
+            control: "play",
+          });
+        }
       } else {
         if (currentAudio) {
           currentAudio.pause();
         }
         isPaused = true;
-        updateStatus('Paused');
+        updateStatus("Paused");
+
+        // If casting, send pause command
+        if (castConnected) {
+          chrome.runtime.sendMessage({
+            action: "castControl",
+            control: "pause",
+          });
+        }
       }
     }
     updateButtons();
   } else {
-    if (ttsMode === 'web') {
+    // Starting playback - reset stop flag
+    stopRequested = false;
+
+    // Auto-switch to server mode if casting
+    if (castConnected && ttsMode === "web") {
+      updateStatus("Casting requires local TTS server...");
+      checkTTSMode();
+      if (ttsMode === "web") {
+        alert(
+          "Casting requires local TTS server. Please start: python3 combined_server.py"
+        );
+        return;
+      }
+    }
+
+    if (ttsMode === "web") {
       playWithWebSpeech();
-    } else if (ttsMode === 'server') {
+    } else if (ttsMode === "server") {
       playWithServer();
     } else {
-      updateStatus('Please configure TTS server');
+      updateStatus("Please configure TTS server");
     }
   }
 }
@@ -481,36 +648,36 @@ function playWithWebSpeech() {
     currentWordIndex = words.length;
     displayTextWithHighlight();
     stopText();
-    updateStatus('Finished');
+    updateStatus("Finished");
     return;
   }
 
-  const textToSpeak = words.slice(currentWordIndex).join(' ');
-  
+  const textToSpeak = words.slice(currentWordIndex).join(" ");
+
   currentUtterance = new SpeechSynthesisUtterance(textToSpeak);
-  
-  const voiceSelect = document.getElementById('voice-select');
+
+  const voiceSelect = document.getElementById("voice-select");
   const voices = speechSynthesis.getVoices();
   if (voiceSelect.value) {
     currentUtterance.voice = voices[voiceSelect.value];
   }
 
-  const speedSlider = document.getElementById('speed-slider');
+  const speedSlider = document.getElementById("speed-slider");
   currentUtterance.rate = parseFloat(speedSlider.value);
   currentUtterance.pitch = 1;
   currentUtterance.volume = 1;
 
   let lastBoundaryTime = Date.now();
   const minBoundaryInterval = 200;
-  
+
   currentUtterance.onboundary = (event) => {
-    if (event.name === 'word') {
+    if (event.name === "word") {
       const now = Date.now();
       if (now - lastBoundaryTime < minBoundaryInterval) {
         return;
       }
       lastBoundaryTime = now;
-      
+
       currentWordIndex++;
       if (currentWordIndex >= words.length) {
         currentWordIndex = words.length - 1;
@@ -524,177 +691,272 @@ function playWithWebSpeech() {
     currentWordIndex = words.length;
     displayTextWithHighlight();
     stopText();
-    updateStatus('Finished');
+    updateStatus("Finished");
   };
 
   currentUtterance.onerror = (event) => {
-    console.error('Speech error:', event);
-    updateStatus('Error: ' + event.error);
+    console.error("Speech error:", event);
+    updateStatus("Error: " + event.error);
     stopText();
   };
 
   speechSynthesis.speak(currentUtterance);
   isPlaying = true;
   isPaused = false;
-  updateStatus('Playing...');
+  updateStatus("Playing...");
   updateButtons();
 }
 
 async function playWithServer() {
+  if (stopRequested || isPaused) {
+    stopRequested = false;
+    return;
+  }
+
   if (currentWordIndex >= words.length) {
     currentWordIndex = words.length;
     displayTextWithHighlight();
     stopText();
-    updateStatus('Finished');
+    updateStatus("Finished");
     return;
   }
 
   // Get chunk of words to synthesize (avoid too long chunks)
   const chunkSize = 50;
   const endIndex = Math.min(currentWordIndex + chunkSize, words.length);
-  const textChunk = words.slice(currentWordIndex, endIndex).join(' ');
-  
+  const textChunk = words.slice(currentWordIndex, endIndex).join(" ");
+
   try {
-    updateStatus('Generating speech...');
-    
-    const speedSlider = document.getElementById('speed-slider');
+    updateStatus("Generating speech...");
+
+    const speedSlider = document.getElementById("speed-slider");
     playbackRate = parseFloat(speedSlider.value);
-    
+
     // Request audio from background worker
     const response = await chrome.runtime.sendMessage({
-      action: 'synthesize',
+      action: "synthesize",
       text: textChunk,
-      rate: playbackRate
+      rate: playbackRate,
     });
-    
+
     if (!response.success) {
       throw new Error(response.error);
     }
-    
-    // Create audio from base64 data URL
+
+    // If casting, send to Chromecast instead of local playback
+    console.log("Cast connected:", castConnected, "isCasting:", isCasting);
+    if (castConnected) {
+      console.log("Attempting to cast audio...");
+      const casted = await castAudio(response.audioData);
+      console.log("Cast result:", casted);
+      if (casted) {
+        isPlaying = true;
+        isPaused = false;
+        updateStatus("Casting...");
+        updateButtons();
+
+        // Estimate word duration for tracking
+        const wordCount = endIndex - currentWordIndex;
+        // Approximate 150 words per minute
+        const estimatedDuration = (wordCount / 150) * 60 * 1000;
+        const msPerWord = estimatedDuration / wordCount;
+        startWordTracking(msPerWord, wordCount);
+
+        // Schedule next chunk
+        const timeoutId = setTimeout(() => {
+          if (stopRequested) {
+            stopRequested = false;
+            return; // Don't continue if stop was requested
+          }
+          currentWordIndex = endIndex;
+          if (currentWordIndex < words.length) {
+            playWithServer();
+          } else {
+            currentWordIndex = words.length;
+            displayTextWithHighlight();
+            stopText();
+            updateStatus("Finished");
+          }
+        }, estimatedDuration);
+        // Store timeout ID so we can cancel it
+        castTimeouts.push(timeoutId);
+
+        return;
+      }
+    }
+    // Local playback (non-casting)
     currentAudio = new Audio(response.audioData);
     currentAudio.playbackRate = playbackRate;
-    
+
     // Estimate word duration and update highlight
     const wordCount = endIndex - currentWordIndex;
-    currentAudio.addEventListener('loadedmetadata', () => {
+    currentAudio.addEventListener("loadedmetadata", () => {
       const duration = currentAudio.duration;
       const msPerWord = (duration * 1000) / wordCount;
       startWordTracking(msPerWord, wordCount);
     });
-    
-    currentAudio.addEventListener('ended', () => {
+
+    currentAudio.addEventListener("ended", () => {
       currentWordIndex = endIndex;
-      
+
       if (currentWordIndex < words.length) {
         playWithServer();
       } else {
         currentWordIndex = words.length;
         displayTextWithHighlight();
         stopText();
-        updateStatus('Finished');
+        updateStatus("Finished");
       }
     });
-    
-    currentAudio.addEventListener('error', (e) => {
-      console.error('Audio playback error:', e);
-      updateStatus('Playback error');
+
+    currentAudio.addEventListener("error", (e) => {
+      console.error("Audio playback error:", e);
+      updateStatus("Playback error");
       stopText();
     });
-    
+
     await currentAudio.play();
     isPlaying = true;
     isPaused = false;
-    updateStatus('Playing...');
+    updateStatus("Playing...");
     updateButtons();
-    
   } catch (error) {
-    console.error('TTS error:', error);
-    updateStatus('Error: ' + error.message);
+    console.error("TTS error:", error);
+    updateStatus("Error: " + error.message);
     stopText();
   }
 }
 
 function startWordTracking(msPerWord, wordCount) {
+  // Clear any existing interval first
+  if (wordTrackingInterval) {
+    clearInterval(wordTrackingInterval);
+  }
+
   let wordOffset = 0;
-  const interval = setInterval(() => {
-    if (!isPlaying || isPaused) {
-      clearInterval(interval);
+  wordTrackingInterval = setInterval(() => {
+    if (!isPlaying) {
+      // Remove || isPaused
+      clearInterval(wordTrackingInterval);
+      wordTrackingInterval = null;
       return;
     }
-    
+
+    if (isPaused) {
+      return; // Don't increment, just wait
+    }
+
     wordOffset++;
     if (wordOffset > wordCount) {
-      clearInterval(interval);
+      clearInterval(wordTrackingInterval);
+      wordTrackingInterval = null;
       return;
     }
-    
+
     displayTextWithHighlight();
     updateProgress();
     currentWordIndex++;
-    
   }, msPerWord);
 }
 
 function stopText() {
-  if (ttsMode === 'web') {
+  // Clear word tracking interval
+  if (wordTrackingInterval) {
+    clearInterval(wordTrackingInterval);
+    wordTrackingInterval = null;
+  }
+
+  // Clear all pending cast timeouts
+  castTimeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+  castTimeouts = [];
+  stopRequested = true;
+
+  if (ttsMode === "web") {
     speechSynthesis.cancel();
     currentUtterance = null;
-  } else if (ttsMode === 'server') {
+  } else if (ttsMode === "server") {
     if (currentAudio) {
       currentAudio.pause();
       currentAudio = null;
     }
+
+    // Stop casting if active
+    if (castConnected && isCasting) {
+      chrome.runtime.sendMessage({ action: "castStop" });
+      isCasting = false;
+    }
   }
-  
+
   removePageHighlights();
   isPlaying = false;
   isPaused = false;
   currentWordIndex = 0;
-  
+
   if (words.length > 0) {
     displayTextWithHighlight();
   } else {
-    const textDisplay = document.getElementById('text-display');
+    const textDisplay = document.getElementById("text-display");
     if (textDisplay) {
-      textDisplay.style.display = 'block';
-      textDisplay.innerHTML = '<p class="placeholder-text">Select text or click Full Page to load content</p>';
+      textDisplay.style.display = "block";
+      textDisplay.innerHTML =
+        '<p class="placeholder-text">Select text or click Full Page to load content</p>';
     }
   }
-  
-  updateStatus('Stopped');
+
+  updateStatus("Stopped");
   updateButtons();
   updateProgress();
 }
 
 function restartText() {
-  if (ttsMode === 'web') {
+  // Clear word tracking interval
+  if (wordTrackingInterval) {
+    clearInterval(wordTrackingInterval);
+    wordTrackingInterval = null;
+  }
+
+  // Clear all pending cast timeouts
+  castTimeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+  castTimeouts = [];
+  stopRequested = true;
+
+  if (ttsMode === "web") {
     speechSynthesis.cancel();
     currentUtterance = null;
-  } else if (ttsMode === 'server') {
+  } else if (ttsMode === "server") {
     if (currentAudio) {
       currentAudio.pause();
       currentAudio = null;
     }
+
+    // Stop casting if active
+    if (castConnected && isCasting) {
+      chrome.runtime.sendMessage({ action: "castStop" });
+      isCasting = false;
+    }
   }
-  
+
   currentWordIndex = 0;
   isPaused = false;
   isPlaying = false;
+  stopRequested = false; // Reset flag so playback can start
   displayTextWithHighlight();
-  updateStatus('Ready to play');
+  updateStatus("Ready to play");
   updateButtons();
 }
 
 function skipWords(count) {
-  const newIndex = Math.max(0, Math.min(currentWordIndex + count, words.length - 1));
+  const newIndex = Math.max(
+    0,
+    Math.min(currentWordIndex + count, words.length - 1)
+  );
   currentWordIndex = newIndex;
-  
+
   if (isPlaying) {
-    if (ttsMode === 'web') {
+    if (ttsMode === "web") {
       speechSynthesis.cancel();
       playWithWebSpeech();
-    } else if (ttsMode === 'server') {
+    } else if (ttsMode === "server") {
       if (currentAudio) {
         currentAudio.pause();
         currentAudio = null;
@@ -707,13 +969,14 @@ function skipWords(count) {
 }
 
 function updateButtons() {
-  const loadPageBtn = document.getElementById('load-page-btn');
-  const loadSelectionBtn = document.getElementById('load-selection-btn');
-  const playPauseBtn = document.getElementById('play-pause-btn');
-  const stopBtn = document.getElementById('stop-btn');
-  const rewindBtn = document.getElementById('rewind-btn');
-  const forwardBtn = document.getElementById('forward-btn');
-  const restartBtn = document.getElementById('restart-btn');
+  const loadPageBtn = document.getElementById("load-page-btn");
+  const loadSelectionBtn = document.getElementById("load-selection-btn");
+  const playPauseBtn = document.getElementById("play-pause-btn");
+  const stopBtn = document.getElementById("stop-btn");
+  const rewindBtn = document.getElementById("rewind-btn");
+  const forwardBtn = document.getElementById("forward-btn");
+  const restartBtn = document.getElementById("restart-btn");
+  const speedSlider = document.getElementById("speed-slider");
 
   const hasContent = words && words.length > 0;
 
@@ -722,28 +985,30 @@ function updateButtons() {
     loadSelectionBtn.disabled = true;
     playPauseBtn.disabled = false;
     stopBtn.disabled = false;
-    rewindBtn.disabled = false;
-    forwardBtn.disabled = false;
+    rewindBtn.disabled = castConnected; // Disable if casting
+    forwardBtn.disabled = castConnected; // Disable if casting
     restartBtn.disabled = false;
-    
+    speedSlider.disabled = castConnected; // Disable if casting
+
     // Update play/pause button
     if (isPaused) {
-      playPauseBtn.textContent = '▶️';
-      playPauseBtn.title = 'Resume';
+      playPauseBtn.textContent = "▶️";
+      playPauseBtn.title = "Resume";
     } else {
-      playPauseBtn.textContent = '⏸️';
-      playPauseBtn.title = 'Pause';
+      playPauseBtn.textContent = "⏸️";
+      playPauseBtn.title = "Pause";
     }
   } else {
     loadPageBtn.disabled = false;
     loadSelectionBtn.disabled = !selectedText;
     playPauseBtn.disabled = !hasContent;
     stopBtn.disabled = !hasContent;
-    rewindBtn.disabled = !hasContent;
-    forwardBtn.disabled = !hasContent;
+    rewindBtn.disabled = !hasContent || castConnected; // Disable if casting
+    forwardBtn.disabled = !hasContent || castConnected; // Disable if casting
     restartBtn.disabled = !hasContent;
-    playPauseBtn.textContent = '▶️';
-    playPauseBtn.title = 'Play';
+    speedSlider.disabled = castConnected; // Disable if casting
+    playPauseBtn.textContent = "▶️";
+    playPauseBtn.title = "Play";
   }
 }
 

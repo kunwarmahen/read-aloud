@@ -7,6 +7,7 @@ A Chrome extension that reads webpage content aloud with synchronized word highl
 - 🎙️ Text-to-speech using browser's built-in Web Speech API
 - 📝 **Read selected text** or entire page
 - ✨ Real-time word highlighting as content is read
+- 📡 **Cast audio to Chromecast** devices on your network
 - ⏯️ Play, pause, and stop controls
 - ⏪⏩ Rewind and forward (skip 10 words)
 - 🔄 Restart from beginning
@@ -44,6 +45,14 @@ A Chrome extension that reads webpage content aloud with synchronized word highl
 - **Restart** (🔄) - Start from beginning
 - **Rewind** (⏪) - Skip back 10 words
 - **Forward** (⏩) - Skip forward 10 words
+
+### Casting to Chromecast:
+
+1. Make sure your Chromecast device is on the same network
+2. Click "📡 Cast to Device" at the bottom of the panel
+3. Select your Chromecast from the popup
+4. Play your content - it will stream to the Chromecast
+5. Click the cast button again to stop casting
 
 Adjust speed and voice as desired. Click the arrow (▲) to minimize the panel.
 

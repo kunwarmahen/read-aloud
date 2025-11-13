@@ -246,6 +246,29 @@
   background: white;
 }
 
+.cast-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+#cast-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+
+#cast-btn:hover {
+  transform: translateY(-2px);
+}
+
+#setup-server-btn {
+  width: 100%;
+  margin-top: 8px;
+}
+
 .text-display {
   background: white;
   border-radius: 8px;
